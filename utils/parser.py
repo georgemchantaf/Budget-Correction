@@ -173,12 +173,12 @@ class DocumentParser:
     def _parse_fixed_table(self, table: List[List[str]]) -> List[Dict[str, Any]]:
         """Parse fixed expenses table"""
         fixed_items = []
-        
+
         # Skip header row
         for row in table[1:]:
             if not row or len(row) < 6:
                 continue
-            
+
             # Clean and convert values
             try:
                 item = {
@@ -190,23 +190,25 @@ class DocumentParser:
                     'inflation_amount': self._parse_number(row[5]),
                     'estimated_2025_consumption': self._parse_number(row[6]) if len(row) > 6 else None
                 }
-                
-                # Only add if we have valid data
-                if item['description'] and item['description'].lower() not in ['total', '']:
+
+                # Skip subtotal and total rows
+                desc_lower = item['description'].lower()
+                skip_keywords = ['total', 'subtotal', 'sum']
+                if item['description'] and not any(keyword in desc_lower for keyword in skip_keywords):
                     fixed_items.append(item)
             except (ValueError, IndexError):
                 continue
-        
+
         return fixed_items
     
     def _parse_variable_table(self, table: List[List[str]]) -> List[Dict[str, Any]]:
         """Parse variable expenses table"""
         variable_items = []
-        
+
         for row in table[1:]:
             if not row or len(row) < 7:
                 continue
-            
+
             try:
                 item = {
                     'description': self._clean_text(row[0]),
@@ -219,12 +221,15 @@ class DocumentParser:
                     'inflation_amount': self._parse_number(row[7]) if len(row) > 7 else None,
                     'total_amount': self._parse_number(row[8]) if len(row) > 8 else None
                 }
-                
-                if item['description'] and item['description'].lower() not in ['total', '']:
+
+                # Skip subtotal and total rows
+                desc_lower = item['description'].lower()
+                skip_keywords = ['total', 'subtotal', 'sum']
+                if item['description'] and not any(keyword in desc_lower for keyword in skip_keywords):
                     variable_items.append(item)
             except (ValueError, IndexError):
                 continue
-        
+
         return variable_items
     
     def _parse_total_table(self, table: List[List[str]]) -> Dict[str, Any]:
@@ -269,17 +274,25 @@ class DocumentParser:
     
     def _parse_number(self, value: Any) -> float:
         """Parse numeric value from string"""
-        if value is None or value == '':
+        if value is None or value == '' or str(value).lower() == 'none':
             return None
-        
+
         # Convert to string and clean
         value_str = str(value).strip()
-        
+
+        # Check if empty after stripping
+        if not value_str or value_str == '':
+            return None
+
         # Remove currency symbols, commas, percentage signs
         value_str = re.sub(r'[$,\s%]', '', value_str)
-        
+
+        # Check again after cleaning
+        if not value_str or value_str == '':
+            return None
+
         # Try to convert to float
         try:
             return float(value_str)
-        except ValueError:
+        except (ValueError, TypeError):
             return None

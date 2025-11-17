@@ -7,45 +7,45 @@ import json
 from io import BytesIO
 
 # ==================== PASSWORD PROTECTION ====================
-def check_password():
-    """Returns `True` if the user had the correct password."""
+# def check_password():
+#     """Returns `True` if the user had the correct password."""
 
-    def password_entered():
-        """Checks whether a password entered by the user is correct."""
-        if st.session_state["password"] == st.secrets["password"]:
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Don't store password
-        else:
-            st.session_state["password_correct"] = False
+#     def password_entered():
+#         """Checks whether a password entered by the user is correct."""
+#         if st.session_state["password"] == st.secrets["password"]:
+#             st.session_state["password_correct"] = True
+#             del st.session_state["password"]  # Don't store password
+#         else:
+#             st.session_state["password_correct"] = False
 
-    if "password_correct" not in st.session_state:
-        # First run, show input for password
-        st.text_input(
-            "Password", 
-            type="password", 
-            on_change=password_entered, 
-            key="password"
-        )
-        st.markdown("### 🔒 Budget Grader - Login Required")
-        st.info("Please enter the password to access the application.")
-        return False
-    elif not st.session_state["password_correct"]:
-        # Password incorrect, show input + error
-        st.text_input(
-            "Password", 
-            type="password", 
-            on_change=password_entered, 
-            key="password"
-        )
-        st.error("😕 Password incorrect")
-        return False
-    else:
-        # Password correct
-        return True
+#     if "password_correct" not in st.session_state:
+#         # First run, show input for password
+#         st.text_input(
+#             "Password", 
+#             type="password", 
+#             on_change=password_entered, 
+#             key="password"
+#         )
+#         st.markdown("### 🔒 Budget Grader - Login Required")
+#         st.info("Please enter the password to access the application.")
+#         return False
+#     elif not st.session_state["password_correct"]:
+#         # Password incorrect, show input + error
+#         st.text_input(
+#             "Password", 
+#             type="password", 
+#             on_change=password_entered, 
+#             key="password"
+#         )
+#         st.error("😕 Password incorrect")
+#         return False
+#     else:
+#         # Password correct
+#         return True
 
-# Check password before showing app
-if not check_password():
-    st.stop()  # Don't continue if password is wrong
+# # Check password before showing app
+# if not check_password():
+#     st.stop()  # Don't continue if password is wrong
 
 # ==================== MAIN APP (only shows if password correct) ====================
 
@@ -76,8 +76,8 @@ if 'grading_report' not in st.session_state:
     st.session_state.grading_report = None
 
 # Header
-st.title("📊 Nursing Budget Grader")
-st.markdown("Lebanese American University - Advancement Services")
+st.title("📊 Budget Grader")
+#st.markdown("Lebanese American University - Advancement Services")
 
 # Main tabs - Only Upload and Results
 tab1, tab2 = st.tabs(["📤 Upload & Grade", "📥 Results"])
@@ -99,12 +99,9 @@ with tab1:
         st.markdown("### Settings")
         inflation_rate = st.number_input("Inflation Rate (%)", value=5, min_value=0, max_value=100)
         tolerance = st.number_input("Tolerance (±)", value=0.5, min_value=0.0, max_value=5.0, step=0.1)
-        use_ai = st.checkbox("Use AI Grading", value=True)
-        
-        if use_ai:
-            api_key = st.text_input("OpenAI API Key", type="password", placeholder="sk-...")
-        else:
-            api_key = None
+        # AI grading hidden - always use rule-based validation
+        use_ai = False
+        api_key = None
     
     if uploaded_file:
         st.success(f"✅ {uploaded_file.name}")
@@ -116,7 +113,12 @@ with tab1:
                     parser = DocumentParser()
                     extracted_data = parser.parse(uploaded_file)
                     st.session_state.extracted_data = extracted_data
-                    
+
+                    # Validate that we have data
+                    if not extracted_data.get('fixed_expenses') and not extracted_data.get('variable_expenses'):
+                        st.error("⚠️ No budget data found in the document. Please check the file format.")
+                        st.stop()
+
                     # Grade immediately
                     if use_ai and api_key:
                         grader = AIGrader(
@@ -135,35 +137,142 @@ with tab1:
                             tolerance=tolerance
                         )
                         report = validator.validate(extracted_data)
-                    
+
                     st.session_state.grading_report = report
                     st.success("✅ Grading complete!")
-                    st.balloons()
-                    
+                    #st.balloons()
+
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
+                    import traceback
+                    st.error(f"Details: {traceback.format_exc()}")
     
-    # Show extracted data preview (expanded)
-    if st.session_state.extracted_data:
+    # Show extracted data with validation highlighting
+    if st.session_state.extracted_data and st.session_state.grading_report:
         st.divider()
-        st.subheader("Extracted Data")
-        
+        st.subheader("📊 Extracted Data with Validation")
+
         data = st.session_state.extracted_data
-        
-        # Fixed Expenses - EXPANDED
+        report = st.session_state.grading_report
+
+        # Fixed Expenses with validation
         st.markdown("#### 📋 Fixed Expenses")
         if data.get('fixed_expenses'):
-            st.dataframe(pd.DataFrame(data['fixed_expenses']), use_container_width=True, hide_index=True)
-        
-        # Variable Expenses - EXPANDED
+            fixed_df = pd.DataFrame(data['fixed_expenses'])
+
+            # Create validation lookup
+            validation_map = {}
+            for item_result in report.get('fixed_expenses_results', []):
+                desc = item_result['description']
+                validation_map[desc] = item_result['validations']
+
+            # Apply styling
+            def highlight_fixed(row):
+                desc = row.get('description', '')
+                if desc not in validation_map:
+                    return [''] * len(row)
+
+                validations = validation_map[desc]
+                styles = []
+                for col in fixed_df.columns:
+                    col_key = col
+                    if col == 'description':
+                        styles.append('')  # Don't highlight description column
+                    elif col_key in validations:
+                        if validations[col_key].get('correct', False):
+                            styles.append('background-color: #90EE90')  # Light green
+                        else:
+                            styles.append('background-color: #FFB6C6')  # Light red
+                    else:
+                        styles.append('')
+                return styles
+
+            styled_fixed = fixed_df.style.apply(highlight_fixed, axis=1)
+            st.dataframe(styled_fixed, use_container_width=True, hide_index=True)
+
+        # Variable Expenses with validation
         st.markdown("#### 📋 Variable Expenses")
         if data.get('variable_expenses'):
-            st.dataframe(pd.DataFrame(data['variable_expenses']), use_container_width=True, hide_index=True)
-        
-        # Total Expenses - EXPANDED
+            var_df = pd.DataFrame(data['variable_expenses'])
+
+            # Create validation lookup
+            validation_map = {}
+            for item_result in report.get('variable_expenses_results', []):
+                desc = item_result['description']
+                validation_map[desc] = item_result['validations']
+
+            # Apply styling
+            def highlight_variable(row):
+                desc = row.get('description', '')
+                if desc not in validation_map:
+                    return [''] * len(row)
+
+                validations = validation_map[desc]
+                styles = []
+                for col in var_df.columns:
+                    col_key = col
+                    if col == 'description':
+                        styles.append('')  # Don't highlight description column
+                    elif col_key in validations:
+                        if validations[col_key].get('correct', False):
+                            styles.append('background-color: #90EE90')  # Light green
+                        else:
+                            styles.append('background-color: #FFB6C6')  # Light red
+                    else:
+                        styles.append('')
+                return styles
+
+            styled_var = var_df.style.apply(highlight_variable, axis=1)
+            st.dataframe(styled_var, use_container_width=True, hide_index=True)
+
+        # Total Expenses with validation
         st.markdown("#### 📋 Total Expenses")
         if data.get('total_expenses'):
-            st.json(data['total_expenses'])
+            total_data = data['total_expenses']
+            total_results = report.get('total_expenses_results', {})
+
+            # Debug: Show validation results
+            with st.expander("🔍 Debug: Total Validation Results"):
+                st.write("**Raw Data:**")
+                st.write("Total Data from Document:", total_data)
+
+                st.write("\n**Fixed Expenses 5-month values:**")
+                for item in data.get('fixed_expenses', []):
+                    st.write(f"  - {item.get('description')}: {item.get('5_month_consumption')}")
+
+                st.write("\n**Variable Expenses 5-month values:**")
+                for item in data.get('variable_expenses', []):
+                    st.write(f"  - {item.get('description')}: {item.get('5_month_consumption')}")
+
+                st.write("\n**Validation Results:**")
+                for col, result in total_results.items():
+                    st.write(f"**{col}:**")
+                    st.write(f"  - Correct: {result.get('correct')}")
+                    st.write(f"  - Expected: {result.get('expected')}")
+                    st.write(f"  - Actual: {result.get('actual')}")
+                    st.write(f"  - Status: {result.get('status')}")
+                    if 'breakdown' in result:
+                        st.write(f"  - Breakdown: {result.get('breakdown')}")
+                    st.write("")
+
+            # Create dataframe for total expenses
+            total_df = pd.DataFrame([total_data])
+
+            # Apply styling
+            def highlight_total(row):
+                styles = []
+                for col in total_df.columns:
+                    if col in total_results:
+                        if total_results[col].get('correct', False):
+                            styles.append('background-color: #90EE90')  # Light green
+                        else:
+                            styles.append('background-color: #FFB6C6')  # Light red
+                    else:
+                        styles.append('')
+                return styles
+
+            styled_total = total_df.style.apply(highlight_total, axis=1)
+            st.dataframe(styled_total, use_container_width=True, hide_index=True)
 
 # TAB 2: Results (Vertical Layout)
 with tab2:
