@@ -226,10 +226,12 @@ class DocumentParser:
                     'estimated_2025_consumption': self._parse_number(row[col_map['2025_estimate']]) if '2025_estimate' in col_map else None
                 }
 
-                # Skip subtotal and total rows
+                # Skip subtotal and total rows (use word boundaries)
                 desc_lower = item['description'].lower()
-                skip_keywords = ['total', 'subtotal', 'sum']
-                if item['description'] and not any(keyword in desc_lower for keyword in skip_keywords):
+                # Check for whole words only, not substrings
+                import re
+                skip_pattern = r'\b(total|subtotal|sum)\b'
+                if item['description'] and not re.search(skip_pattern, desc_lower):
                     fixed_items.append(item)
             except (ValueError, IndexError, KeyError):
                 continue
@@ -299,10 +301,12 @@ class DocumentParser:
                     'total_amount': self._parse_number(row[col_map['total']]) if 'total' in col_map else None
                 }
 
-                # Skip subtotal and total rows
+                # Skip subtotal and total rows (use word boundaries)
                 desc_lower = item['description'].lower()
-                skip_keywords = ['total', 'subtotal', 'sum']
-                if item['description'] and not any(keyword in desc_lower for keyword in skip_keywords):
+                # Check for whole words only, not substrings
+                import re
+                skip_pattern = r'\b(total|subtotal|sum)\b'
+                if item['description'] and not re.search(skip_pattern, desc_lower):
                     variable_items.append(item)
             except (ValueError, IndexError, KeyError):
                 continue
@@ -320,15 +324,18 @@ class DocumentParser:
         # Find column indices by matching keywords
         col_map = {}
         for i, h in enumerate(headers):
-            if '5' in h and 'month' in h:
+            if '5-month' in h or ('5' in h and 'month' in h and i < 3):
+                # "5-month" column (usually first data column)
                 col_map['5_month'] = i
-            elif 'yearly' in h and 'total' in h:
+            elif 'yearly' in h and ('consumption' in h or 'total' in h):
+                # "Yearly consumption" or "Yearly Total"
                 col_map['yearly'] = i
             elif 'inflation' in h and ('rate' in h or '%' in h):
                 col_map['inflation_rate'] = i
             elif 'inflation' in h and ('amount' in h or '$' in h):
                 col_map['inflation_amount'] = i
-            elif ('total' in h and '2025' in h) or (i == len(headers) - 1 and 'total' in h):
+            elif ('total' in h and ('2025' in h or 'amount' in h)) or (i == len(headers) - 1 and 'total' in h):
+                # "Total amount" or "Total 2025" (usually last column)
                 col_map['total'] = i
 
         # Parse the data row (usually just one row)
