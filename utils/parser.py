@@ -150,18 +150,27 @@ class DocumentParser:
             headers = [str(cell).lower().strip() for cell in table[0]]
             
             # Check if it's Fixed Expenses table
-            if any('fixed' in h for h in headers) or \
-               (any('monthly consumption' in h for h in headers) and 
-                any('2024' in h for h in headers)):
-                result['fixed_expenses'] = self._parse_fixed_table(table)
-            
+            # Look for: "fixed" keyword OR ("monthly" AND "2024" columns)
+            is_fixed = (any('fixed' in h for h in headers) or
+                       (any('monthly' in h for h in headers) and
+                        any('2024' in h for h in headers)))
+
             # Check if it's Variable Expenses table
-            elif any('variable' in h for h in headers) or \
-                 any('patient day' in h for h in headers):
-                result['variable_expenses'] = self._parse_variable_table(table)
-            
+            # Look for: "variable" keyword OR ("pt day" OR "patient day" columns)
+            is_variable = (any('variable' in h for h in headers) or
+                          any('pt day' in h or 'patient day' in h for h in headers))
+
             # Check if it's Total Expenses table
-            elif any('total' in h and 'expense' in h for h in headers):
+            # Look for: ("total" AND column headers like "yearly total" or "inflation")
+            is_total = (any('total' in h for h in headers) and
+                       any('yearly' in h or 'inflation' in h for h in headers) and
+                       len(table) <= 3)  # Total table is usually 1-2 rows
+
+            if is_fixed:
+                result['fixed_expenses'] = self._parse_fixed_table(table)
+            elif is_variable:
+                result['variable_expenses'] = self._parse_variable_table(table)
+            elif is_total:
                 result['total_expenses'] = self._parse_total_table(table)
             
             # Check for initial patient days table
@@ -171,24 +180,47 @@ class DocumentParser:
         return result
     
     def _parse_fixed_table(self, table: List[List[str]]) -> List[Dict[str, Any]]:
-        """Parse fixed expenses table"""
+        """Parse fixed expenses table with flexible column detection"""
         fixed_items = []
 
-        # Skip header row
+        if not table or len(table) < 2:
+            return fixed_items
+
+        # Get headers and find column indices
+        headers = [str(cell).lower().strip() for cell in table[0]]
+
+        # Find column indices by matching keywords
+        col_map = {}
+        for i, h in enumerate(headers):
+            if any(kw in h for kw in ['description', 'expense', 'item']):
+                col_map['description'] = i
+            elif '5' in h and 'month' in h:
+                col_map['5_month'] = i
+            elif 'monthly' in h and '2024' not in h and 'year' not in h:
+                col_map['monthly'] = i
+            elif '2024' in h or ('year' in h and 'consumption' in h):
+                col_map['2024_year'] = i
+            elif 'inflation' in h and ('rate' in h or '%' in h):
+                col_map['inflation_rate'] = i
+            elif 'inflation' in h and ('amount' in h or '$' in h or 'dollar' in h):
+                col_map['inflation_amount'] = i
+            elif '2025' in h or 'estimate' in h:
+                col_map['2025_estimate'] = i
+
+        # Parse data rows
         for row in table[1:]:
-            if not row or len(row) < 6:
+            if not row or len(row) < 3:
                 continue
 
-            # Clean and convert values
             try:
                 item = {
-                    'description': self._clean_text(row[0]),
-                    '5_month_consumption': self._parse_number(row[1]),
-                    'monthly_consumption': self._parse_number(row[2]),
-                    '2024_year_consumption': self._parse_number(row[3]),
-                    'inflation_rate': self._parse_number(row[4]),
-                    'inflation_amount': self._parse_number(row[5]),
-                    'estimated_2025_consumption': self._parse_number(row[6]) if len(row) > 6 else None
+                    'description': self._clean_text(row[col_map.get('description', 0)]),
+                    '5_month_consumption': self._parse_number(row[col_map['5_month']]) if '5_month' in col_map else None,
+                    'monthly_consumption': self._parse_number(row[col_map['monthly']]) if 'monthly' in col_map else None,
+                    '2024_year_consumption': self._parse_number(row[col_map['2024_year']]) if '2024_year' in col_map else None,
+                    'inflation_rate': self._parse_number(row[col_map['inflation_rate']]) if 'inflation_rate' in col_map else None,
+                    'inflation_amount': self._parse_number(row[col_map['inflation_amount']]) if 'inflation_amount' in col_map else None,
+                    'estimated_2025_consumption': self._parse_number(row[col_map['2025_estimate']]) if '2025_estimate' in col_map else None
                 }
 
                 # Skip subtotal and total rows
@@ -196,30 +228,59 @@ class DocumentParser:
                 skip_keywords = ['total', 'subtotal', 'sum']
                 if item['description'] and not any(keyword in desc_lower for keyword in skip_keywords):
                     fixed_items.append(item)
-            except (ValueError, IndexError):
+            except (ValueError, IndexError, KeyError):
                 continue
 
         return fixed_items
     
     def _parse_variable_table(self, table: List[List[str]]) -> List[Dict[str, Any]]:
-        """Parse variable expenses table"""
+        """Parse variable expenses table with flexible column detection"""
         variable_items = []
 
+        if not table or len(table) < 2:
+            return variable_items
+
+        # Get headers and find column indices
+        headers = [str(cell).lower().strip() for cell in table[0]]
+
+        # Find column indices by matching keywords
+        col_map = {}
+        for i, h in enumerate(headers):
+            if any(kw in h for kw in ['description', 'expense', 'item']):
+                col_map['description'] = i
+            elif '5' in h and 'month' in h and 'cons' in h:
+                col_map['5_month_cons'] = i
+            elif '5' in h and ('pt' in h or 'patient') and 'day' in h:
+                col_map['5_month_days'] = i
+            elif 'cons' in h and 'per' in h and ('pt' in h or 'patient'):
+                col_map['cons_per_day'] = i
+            elif ('2025' in h or 'yearly' in h or 'estimated' in h) and ('pt' in h or 'patient') and 'day' in h:
+                col_map['yearly_days'] = i
+            elif ('yearly' in h or '2025' in h) and 'amount' in h:
+                col_map['yearly_amount'] = i
+            elif 'inflation' in h and ('rate' in h or '%' in h):
+                col_map['inflation_rate'] = i
+            elif 'inflation' in h and ('amount' in h or '$' in h):
+                col_map['inflation_amount'] = i
+            elif 'total' in h and ('2025' in h or 'amount' in h):
+                col_map['total'] = i
+
+        # Parse data rows
         for row in table[1:]:
-            if not row or len(row) < 7:
+            if not row or len(row) < 3:
                 continue
 
             try:
                 item = {
-                    'description': self._clean_text(row[0]),
-                    '5_month_consumption': self._parse_number(row[1]),
-                    '5_month_patient_days': self._parse_number(row[2]),
-                    'consumption_per_patient_day': self._parse_number(row[3]),
-                    'estimated_2025_yearly_pt_days': self._parse_number(row[4]),
-                    'amount_per_yearly_pt_days': self._parse_number(row[5]),
-                    'inflation_rate': self._parse_number(row[6]),
-                    'inflation_amount': self._parse_number(row[7]) if len(row) > 7 else None,
-                    'total_amount': self._parse_number(row[8]) if len(row) > 8 else None
+                    'description': self._clean_text(row[col_map.get('description', 0)]),
+                    '5_month_consumption': self._parse_number(row[col_map['5_month_cons']]) if '5_month_cons' in col_map else None,
+                    '5_month_patient_days': self._parse_number(row[col_map['5_month_days']]) if '5_month_days' in col_map else None,
+                    'consumption_per_patient_day': self._parse_number(row[col_map['cons_per_day']]) if 'cons_per_day' in col_map else None,
+                    'estimated_2025_yearly_pt_days': self._parse_number(row[col_map['yearly_days']]) if 'yearly_days' in col_map else None,
+                    'amount_per_yearly_pt_days': self._parse_number(row[col_map['yearly_amount']]) if 'yearly_amount' in col_map else None,
+                    'inflation_rate': self._parse_number(row[col_map['inflation_rate']]) if 'inflation_rate' in col_map else None,
+                    'inflation_amount': self._parse_number(row[col_map['inflation_amount']]) if 'inflation_amount' in col_map else None,
+                    'total_amount': self._parse_number(row[col_map['total']]) if 'total' in col_map else None
                 }
 
                 # Skip subtotal and total rows
@@ -227,29 +288,49 @@ class DocumentParser:
                 skip_keywords = ['total', 'subtotal', 'sum']
                 if item['description'] and not any(keyword in desc_lower for keyword in skip_keywords):
                     variable_items.append(item)
-            except (ValueError, IndexError):
+            except (ValueError, IndexError, KeyError):
                 continue
 
         return variable_items
     
     def _parse_total_table(self, table: List[List[str]]) -> Dict[str, Any]:
-        """Parse total expenses table"""
-        # Usually just one row of totals
+        """Parse total expenses table with flexible column detection"""
+        if not table or len(table) < 2:
+            return {}
+
+        # Get headers and find column indices
+        headers = [str(cell).lower().strip() for cell in table[0]]
+
+        # Find column indices by matching keywords
+        col_map = {}
+        for i, h in enumerate(headers):
+            if '5' in h and 'month' in h:
+                col_map['5_month'] = i
+            elif 'yearly' in h and 'total' in h:
+                col_map['yearly'] = i
+            elif 'inflation' in h and ('rate' in h or '%' in h):
+                col_map['inflation_rate'] = i
+            elif 'inflation' in h and ('amount' in h or '$' in h):
+                col_map['inflation_amount'] = i
+            elif ('total' in h and '2025' in h) or (i == len(headers) - 1 and 'total' in h):
+                col_map['total'] = i
+
+        # Parse the data row (usually just one row)
         for row in table[1:]:
-            if not row or len(row) < 5:
+            if not row or len(row) < 3:
                 continue
-            
+
             try:
                 return {
-                    '5_month_consumption': self._parse_number(row[1]),
-                    'yearly_consumption': self._parse_number(row[2]),
-                    'inflation_rate': self._parse_number(row[3]),
-                    'inflation_amount': self._parse_number(row[4]),
-                    'total_amount': self._parse_number(row[5]) if len(row) > 5 else None
+                    '5_month_consumption': self._parse_number(row[col_map['5_month']]) if '5_month' in col_map else None,
+                    'yearly_consumption': self._parse_number(row[col_map['yearly']]) if 'yearly' in col_map else None,
+                    'inflation_rate': self._parse_number(row[col_map['inflation_rate']]) if 'inflation_rate' in col_map else None,
+                    'inflation_amount': self._parse_number(row[col_map['inflation_amount']]) if 'inflation_amount' in col_map else None,
+                    'total_amount': self._parse_number(row[col_map['total']]) if 'total' in col_map else None
                 }
-            except (ValueError, IndexError):
+            except (ValueError, IndexError, KeyError):
                 continue
-        
+
         return {}
     
     def _extract_patient_days(self, table: List[List[str]]) -> int:
@@ -273,7 +354,7 @@ class DocumentParser:
         return cleaned.strip()
     
     def _parse_number(self, value: Any) -> float:
-        """Parse numeric value from string"""
+        """Parse numeric value from string, including formulas like '500/5= 100$'"""
         if value is None or value == '' or str(value).lower() == 'none':
             return None
 
@@ -284,7 +365,16 @@ class DocumentParser:
         if not value_str or value_str == '':
             return None
 
-        # Remove currency symbols, commas, percentage signs
+        # Check if it contains a formula (e.g., "500/5= 100$" or "100 x 12= 1,200$")
+        # Extract the result after the equals sign
+        if '=' in value_str:
+            # Split by = and take the part after it
+            parts = value_str.split('=')
+            if len(parts) >= 2:
+                # Take the last part (the result)
+                value_str = parts[-1].strip()
+
+        # Remove currency symbols, commas, percentage signs, spaces
         value_str = re.sub(r'[$,\s%]', '', value_str)
 
         # Check again after cleaning
