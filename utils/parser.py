@@ -190,22 +190,25 @@ class DocumentParser:
         headers = [str(cell).lower().strip() for cell in table[0]]
 
         # Find column indices by matching keywords
+        # Process in priority order: check 2025 before 2024 to avoid conflicts
         col_map = {}
         for i, h in enumerate(headers):
             if any(kw in h for kw in ['description', 'expense', 'item']):
                 col_map['description'] = i
             elif '5' in h and 'month' in h:
                 col_map['5_month'] = i
-            elif 'monthly' in h and '2024' not in h and 'year' not in h:
+            elif 'monthly' in h and '2024' not in h and '2025' not in h and 'year' not in h:
                 col_map['monthly'] = i
-            elif '2024' in h or ('year' in h and 'consumption' in h):
+            elif '2025' in h or 'estimate' in h:
+                # Check 2025/estimate BEFORE 2024 to avoid wrong mapping
+                col_map['2025_estimate'] = i
+            elif '2024' in h:
+                # Only match if 2024 is explicitly in header
                 col_map['2024_year'] = i
             elif 'inflation' in h and ('rate' in h or '%' in h):
                 col_map['inflation_rate'] = i
             elif 'inflation' in h and ('amount' in h or '$' in h or 'dollar' in h):
                 col_map['inflation_amount'] = i
-            elif '2025' in h or 'estimate' in h:
-                col_map['2025_estimate'] = i
 
         # Parse data rows
         for row in table[1:]:
