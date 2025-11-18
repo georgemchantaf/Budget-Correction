@@ -247,25 +247,38 @@ class DocumentParser:
         headers = [str(cell).lower().strip() for cell in table[0]]
 
         # Find column indices by matching keywords
+        # Be specific: check more specific conditions first
         col_map = {}
         for i, h in enumerate(headers):
-            if any(kw in h for kw in ['description', 'expense', 'item']):
+            # Description column
+            if any(kw in h for kw in ['description', 'item']) and not any(x in h for x in ['consumption', 'amount', 'day']):
                 col_map['description'] = i
-            elif '5' in h and 'month' in h and 'cons' in h:
+            elif 'expense' in h and len(h) < 15 and not any(x in h for x in ['consumption', 'cons.', 'amount', 'day']):
+                # "Expense" by itself (short header)
+                col_map['description'] = i
+            # 5-month consumption: "5-month consumption" OR "5-month Cons."
+            elif ('5-month' in h or '5m' in h) and ('consumption' in h or 'cons' in h):
                 col_map['5_month_cons'] = i
-            elif '5' in h and ('pt' in h or 'patient') and 'day' in h:
+            # 5-month patient days: "5-month patient days" OR "5m Pt Days"
+            elif ('5-month' in h or '5m' in h) and ('pt' in h or 'patient') and 'day' in h:
                 col_map['5_month_days'] = i
-            elif 'cons' in h and 'per' in h and ('pt' in h or 'patient'):
+            # Consumption per patient day: "consumption per patient day" OR "Cons per Pt Day"
+            elif ('consumption' in h or 'cons' in h) and 'per' in h and ('pt' in h or 'patient') and 'day' in h:
                 col_map['cons_per_day'] = i
-            elif ('2025' in h or 'yearly' in h or 'estimated' in h) and ('pt' in h or 'patient') and 'day' in h:
+            # Estimated yearly pt days: "Estimated 2025 yearly pt. days" OR "2025 Pt Days"
+            elif ('2025' in h or 'estimated' in h or 'yearly' in h) and ('pt' in h or 'patient') and 'day' in h and 'amount' not in h:
                 col_map['yearly_days'] = i
-            elif ('yearly' in h or '2025' in h) and 'amount' in h:
+            # Amount per yearly pt days: "Amount per yearly pt. days" OR "Yearly Amount"
+            elif ('yearly' in h or 'per' in h) and 'amount' in h:
                 col_map['yearly_amount'] = i
+            # Inflation rate
             elif 'inflation' in h and ('rate' in h or '%' in h):
                 col_map['inflation_rate'] = i
+            # Inflation amount
             elif 'inflation' in h and ('amount' in h or '$' in h):
                 col_map['inflation_amount'] = i
-            elif 'total' in h and ('2025' in h or 'amount' in h):
+            # Total amount: "Total amount" OR "Total 2025"
+            elif 'total' in h and ('amount' in h or '2025' in h):
                 col_map['total'] = i
 
         # Parse data rows
