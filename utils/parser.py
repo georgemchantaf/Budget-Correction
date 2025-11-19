@@ -4,6 +4,7 @@ from pypdf import PdfReader
 import re
 import pandas as pd
 from typing import Dict, List, Any
+from utils.column_mappings import FIXED_MAPPINGS, VARIABLE_MAPPINGS
 
 class DocumentParser:
     """Parse Word, Excel, and PDF documents to extract budget data"""
@@ -187,7 +188,15 @@ class DocumentParser:
             return fixed_items
 
         # Get headers and find column indices
-        headers = [str(cell).lower().strip() for cell in table[0]]
+        # Normalize headers: remove non-breaking spaces, special dashes, and dots
+        headers = []
+        for cell in table[0]:
+            h = str(cell).lower().strip()
+            # Remove non-breaking spaces (U+00A0), special dashes (U+2011), and dots
+            h = h.replace('\xa0', ' ').replace('\u2011', '-').replace('‑', '-').replace('.', '')
+            # Split and rejoin to normalize whitespace
+            h = ' '.join(h.split())
+            headers.append(h)
 
         # Find column indices by matching keywords
         # Process in priority order: check 2025 before 2024 to avoid conflicts
@@ -205,10 +214,32 @@ class DocumentParser:
             elif '2024' in h:
                 # Only match if 2024 is explicitly in header
                 col_map['2024_year'] = i
-            elif 'inflation' in h and ('rate' in h or '%' in h):
-                col_map['inflation_rate'] = i
+            # Check inflation_amount BEFORE inflation_rate to avoid mismatching "inflation amount (10%)" as rate
             elif 'inflation' in h and ('amount' in h or '$' in h or 'dollar' in h):
                 col_map['inflation_amount'] = i
+            elif 'inflation' in h and ('rate' in h or '%' in h):
+                col_map['inflation_rate'] = i
+
+        # Use pre-computed mappings as fallback if key columns are missing
+        required_fields = ['5_month', 'monthly', '2024_year', '2025_estimate']
+        missing_fields = [f for f in required_fields if f not in col_map]
+
+        if len(missing_fields) >= 2:  # If missing 2+ key fields, use pre-computed mappings
+            mapping_col_map = self._match_columns_from_mappings(headers, "fixed")
+            # Merge results with existing col_map (prefer existing matches)
+            for field, idx in mapping_col_map.items():
+                if field not in col_map:
+                    # Map field names to internal names
+                    if field == '5_month_consumption':
+                        col_map['5_month'] = idx
+                    elif field == 'monthly_consumption':
+                        col_map['monthly'] = idx
+                    elif field == '2024_year_consumption':
+                        col_map['2024_year'] = idx
+                    elif field == 'estimated_2025_consumption':
+                        col_map['2025_estimate'] = idx
+                    else:
+                        col_map[field] = idx
 
         # Parse data rows
         for row in table[1:]:
@@ -246,7 +277,15 @@ class DocumentParser:
             return variable_items
 
         # Get headers and find column indices
-        headers = [str(cell).lower().strip() for cell in table[0]]
+        # Normalize headers: replace newlines/multiple spaces with single space, remove dots, non-breaking spaces, and special dashes
+        headers = []
+        for cell in table[0]:
+            h = str(cell).lower().strip()
+            # Remove non-breaking spaces (U+00A0), special dashes (U+2011), and dots
+            h = h.replace('\xa0', ' ').replace('\u2011', '-').replace('‑', '-').replace('.', '')
+            # Split and rejoin to normalize whitespace
+            h = ' '.join(h.split())
+            headers.append(h)
 
         # Find column indices by matching keywords
         # Be specific: check more specific conditions first
@@ -258,20 +297,23 @@ class DocumentParser:
             elif 'expense' in h and len(h) < 15 and not any(x in h for x in ['consumption', 'cons.', 'amount', 'day']):
                 # "Expense" by itself (short header)
                 col_map['description'] = i
-            # 5-month consumption: "5-month consumption" OR "5-month Cons."
-            elif ('5-month' in h or '5m' in h) and ('consumption' in h or 'cons' in h):
+            # 5-month consumption: "5-month consumption" OR "5 month Consumption" OR "5m Cons."
+            elif (('5-month' in h or '5 month' in h or '5m' in h) and ('consumption' in h or 'cons' in h)):
                 col_map['5_month_cons'] = i
-            # 5-month patient days: "5-month patient days" OR "5m Pt Days"
-            elif ('5-month' in h or '5m' in h) and ('pt' in h or 'patient') and 'day' in h:
+            # 5-month patient days/cases: "5-month patient days" OR "5 month patient days" OR "5m Pt Days" OR "Number surgical cases in 5 months"
+            elif (('5-month' in h or '5 month' in h or '5m' in h or ('5' in h and 'month' in h)) and
+                  ((('pt' in h or 'patient' in h) and 'day' in h) or ('case' in h) or ('procedure' in h))):
                 col_map['5_month_days'] = i
-            # Consumption per patient day: "consumption per patient day" OR "Cons per Pt Day"
-            elif ('consumption' in h or 'cons' in h) and 'per' in h and ('pt' in h or 'patient') and 'day' in h:
+            # Consumption per patient day/case: "consumption per patient day" OR "Cons per Pt Day" OR "Consumption of Surgical cases"
+            elif (('consumption' in h or 'cons' in h) and 'per' in h and (('pt' in h or 'patient' in h) and 'day' in h)) or \
+                 (('consumption' in h or 'cons' in h) and ('case' in h or 'procedure' in h)):
                 col_map['cons_per_day'] = i
-            # Estimated yearly pt days: "Estimated 2025 yearly pt. days" OR "2025 Pt Days"
-            elif ('2025' in h or 'estimated' in h or 'yearly' in h) and ('pt' in h or 'patient') and 'day' in h and 'amount' not in h:
+            # Estimated yearly pt days/cases: "Estimated 2025 yearly pt. days" OR "2025 Pt Days" OR "Estimated 2025 yearly Surgical Case"
+            elif ('2025' in h or 'estimated' in h or 'yearly' in h) and \
+                 ((('pt' in h or 'patient' in h) and 'day' in h) or ('case' in h) or ('procedure' in h)) and 'amount' not in h and 'per' not in h:
                 col_map['yearly_days'] = i
-            # Amount per yearly pt days: "Amount per yearly pt. days" OR "Yearly Amount"
-            elif ('yearly' in h or 'per' in h) and 'amount' in h:
+            # Amount per yearly pt days/cases: "Amount per yearly pt. days" OR "Yearly Amount" OR "Amount per yearly Surgical case"
+            elif ('yearly' in h or 'per' in h) and 'amount' in h and 'inflation' not in h:
                 col_map['yearly_amount'] = i
             # Inflation rate
             elif 'inflation' in h and ('rate' in h or '%' in h):
@@ -282,6 +324,17 @@ class DocumentParser:
             # Total amount: "Total amount" OR "Total 2025"
             elif 'total' in h and ('amount' in h or '2025' in h):
                 col_map['total'] = i
+
+        # Use pre-computed mappings as fallback if key columns are missing
+        required_fields = ['5_month_cons', '5_month_days', 'cons_per_day', 'yearly_days']
+        missing_fields = [f for f in required_fields if f not in col_map]
+
+        if len(missing_fields) >= 2:  # If missing 2+ key fields, use pre-computed mappings
+            mapping_col_map = self._match_columns_from_mappings(headers, "variable")
+            # Merge results with existing col_map (prefer existing matches)
+            for field, idx in mapping_col_map.items():
+                if field not in col_map:
+                    col_map[field] = idx
 
         # Parse data rows
         for row in table[1:]:
@@ -319,7 +372,15 @@ class DocumentParser:
             return {}
 
         # Get headers and find column indices
-        headers = [str(cell).lower().strip() for cell in table[0]]
+        # Normalize headers: remove non-breaking spaces, special dashes, and dots
+        headers = []
+        for cell in table[0]:
+            h = str(cell).lower().strip()
+            # Remove non-breaking spaces (U+00A0), special dashes (U+2011), and dots
+            h = h.replace('\xa0', ' ').replace('\u2011', '-').replace('‑', '-').replace('.', '')
+            # Split and rejoin to normalize whitespace
+            h = ' '.join(h.split())
+            headers.append(h)
 
         # Find column indices by matching keywords
         col_map = {}
@@ -366,6 +427,17 @@ class DocumentParser:
                         return self._parse_number(row[i + 1])
         return None
     
+    def _match_columns_from_mappings(self, headers: List[str], table_type: str) -> Dict[str, int]:
+        """Look up column mappings from pre-computed dictionary"""
+        headers_tuple = tuple(headers)
+
+        if table_type == "fixed":
+            return FIXED_MAPPINGS.get(headers_tuple, {})
+        elif table_type == "variable":
+            return VARIABLE_MAPPINGS.get(headers_tuple, {})
+        else:
+            return {}
+
     def _clean_text(self, text: str) -> str:
         """Clean text from table cells"""
         if not text:
@@ -377,7 +449,7 @@ class DocumentParser:
         return cleaned.strip()
     
     def _parse_number(self, value: Any) -> float:
-        """Parse numeric value from string, including formulas like '500/5= 100$'"""
+        """Parse numeric value from string, including formulas, text like '3,650 (10 pts × 365 days)' or '1,000 patient days'"""
         if value is None or value == '' or str(value).lower() == 'none':
             return None
 
@@ -396,6 +468,19 @@ class DocumentParser:
             if len(parts) >= 2:
                 # Take the last part (the result)
                 value_str = parts[-1].strip()
+
+        # If value contains parentheses, extract number before them
+        # e.g., "3,650 (10 pts × 365 days)" -> "3,650"
+        if '(' in value_str:
+            value_str = value_str.split('(')[0].strip()
+
+        # Try to extract the first number from the string using regex
+        # This handles cases like "1,000 patient days" or "patient days: 1,000"
+        # Pattern matches: numbers with commas OR plain numbers
+        number_pattern = r'-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?'
+        match = re.search(number_pattern, value_str)
+        if match:
+            value_str = match.group(0)
 
         # Remove currency symbols, commas, percentage signs, spaces
         value_str = re.sub(r'[$,\s%]', '', value_str)

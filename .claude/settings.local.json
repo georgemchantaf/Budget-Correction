@@ -4,7 +4,11 @@
       "Bash(python -c:*)",
       "Bash(python validate_all.py:*)",
       "Bash(tee:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(pip install:*)",
+      "Bash(dir:*)",
+      "Bash(timeout 120 python:*)",
+      "Bash(cat:*)"
     ],
     "deny": [],
     "ask": []
